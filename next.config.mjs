@@ -1,4 +1,14 @@
-/** @type {import('next').NextConfig} */
-const nextConfig = {};
+import createNextIntlPlugin from 'next-intl/plugin';
 
-export default nextConfig;
+const withNextIntl = createNextIntlPlugin('./src/i18n.ts');
+
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  webpack: (config) => {
+    // Fix for @react-pdf/renderer
+    config.resolve.alias.canvas = false;
+    return config;
+  },
+};
+
+export default withNextIntl(nextConfig);
