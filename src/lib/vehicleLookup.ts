@@ -11,9 +11,12 @@ import {
 
 // --- Types ---
 
+export type Co2Standard = 'WLTP' | 'NEDC';
+
 export interface VehicleSpecs {
   mass_kg?: number;
   co2_wltp?: number;
+  co2_standard?: Co2Standard;
   engine_cc?: number;
   fuel?: string;
   power_kw?: number;
@@ -27,6 +30,7 @@ export interface StaticVehicle {
   yearTo: number;
   mass_kg?: number;
   co2_wltp?: number;
+  co2_nedc?: number;
   engine_cc?: number;
   fuel?: string;
   power_kw?: number;
@@ -36,11 +40,61 @@ export interface StaticVehicle {
 export interface StaticVariant {
   variant: string;
   mass_kg: number;
-  co2_wltp: number;
+  co2_wltp?: number;
+  co2_nedc?: number;
   engine_cc: number;
   fuel: string;
   power_kw: number;
 }
+
+// --- WMI Code lookup for EU VIN detection ---
+
+const WMI_CODES: Record<string, string> = {
+  'WUA': 'Audi',
+  'WAU': 'Audi',
+  'WVW': 'Volkswagen',
+  'WVG': 'Volkswagen',
+  'WBA': 'BMW',
+  'WBS': 'BMW',
+  'WBY': 'BMW',
+  'WDB': 'Mercedes-Benz',
+  'WDC': 'Mercedes-Benz',
+  'WDD': 'Mercedes-Benz',
+  'W1K': 'Mercedes-Benz',
+  'W1N': 'Mercedes-Benz',
+  'ZFF': 'Ferrari',
+  'ZHW': 'Lamborghini',
+  'ZAR': 'Alfa Romeo',
+  'ZAM': 'Maserati',
+  'ZFA': 'Fiat',
+  'SAJ': 'Jaguar',
+  'SAL': 'Land Rover',
+  'SBM': 'McLaren',
+  'SCF': 'Aston Martin',
+  'SCC': 'Lotus',
+  'WP0': 'Porsche',
+  'WP1': 'Porsche',
+  'TRU': 'Audi',
+  'YV1': 'Volvo',
+  'YS3': 'Saab',
+  'VF1': 'Renault',
+  'VF3': 'Peugeot',
+  'VF7': 'Citroën',
+  'WF0': 'Ford',
+  'TMB': 'Skoda',
+  'VSS': 'SEAT',
+  'JTD': 'Toyota',
+  'JN1': 'Nissan',
+  'JHM': 'Honda',
+  'JMZ': 'Mazda',
+  'JF1': 'Subaru',
+  'JF2': 'Subaru',
+  'KMH': 'Hyundai',
+  'KNA': 'Kia',
+  'KNM': 'Kia',
+  'SFZ': 'Bentley',
+  'SCA': 'Rolls-Royce',
+};
 
 // --- Make aliases for fuzzy matching ---
 const MAKE_ALIASES: Record<string, string> = {
@@ -62,6 +116,17 @@ const MAKE_ALIASES: Record<string, string> = {
 
 const vehicles = vehicleData.vehicles as StaticVehicle[];
 
+/** Get the effective CO2 value and standard from a variant or vehicle entry */
+function getCo2(entry: { co2_wltp?: number; co2_nedc?: number }): { co2: number | undefined; standard: Co2Standard } {
+  if (entry.co2_wltp !== undefined) {
+    return { co2: entry.co2_wltp, standard: 'WLTP' };
+  }
+  if (entry.co2_nedc !== undefined) {
+    return { co2: entry.co2_nedc, standard: 'NEDC' };
+  }
+  return { co2: undefined, standard: 'WLTP' };
+}
+
 export function getStaticMakes(): string[] {
   return Array.from(new Set(vehicles.map(v => v.make))).sort();
 }
@@ -77,13 +142,21 @@ export function getStaticModels(make: string): string[] {
 
 export function getStaticVariants(make: string, model: string, year?: number): StaticVariant[] {
   const normalizedMake = normalizeMake(make);
-  const entry = vehicles.find(v => {
+  const entries = vehicles.filter(v => {
     if (v.make.toLowerCase() !== normalizedMake.toLowerCase()) return false;
     if (v.model.toLowerCase() !== model.toLowerCase()) return false;
     if (year && (year < v.yearFrom || year > v.yearTo)) return false;
     return true;
   });
-  return entry?.variants || [];
+
+  // Collect variants from all matching entries (there might be multiple year ranges)
+  const allVariants: StaticVariant[] = [];
+  for (const entry of entries) {
+    if (entry.variants) {
+      allVariants.push(...entry.variants);
+    }
+  }
+  return allVariants;
 }
 
 export function lookupStatic(make: string, model: string, year?: number, variant?: string): VehicleSpecs | null {
@@ -103,9 +176,11 @@ export function lookupStatic(make: string, model: string, year?: number, variant
       vr.variant.toLowerCase() === variant.toLowerCase()
     );
     if (v) {
+      const { co2, standard } = getCo2(v);
       return {
         mass_kg: v.mass_kg,
-        co2_wltp: v.co2_wltp,
+        co2_wltp: co2,
+        co2_standard: standard,
         engine_cc: v.engine_cc,
         fuel: v.fuel,
         power_kw: v.power_kw,
@@ -116,9 +191,11 @@ export function lookupStatic(make: string, model: string, year?: number, variant
 
   // If no variants or no variant match, use top-level data or first variant
   if (entry.mass_kg !== undefined) {
+    const { co2, standard } = getCo2(entry);
     return {
       mass_kg: entry.mass_kg,
-      co2_wltp: entry.co2_wltp,
+      co2_wltp: co2,
+      co2_standard: standard,
       engine_cc: entry.engine_cc,
       fuel: entry.fuel,
       power_kw: entry.power_kw,
@@ -129,9 +206,11 @@ export function lookupStatic(make: string, model: string, year?: number, variant
   // Use first variant as default
   if (entry.variants && entry.variants.length > 0) {
     const first = entry.variants[0];
+    const { co2, standard } = getCo2(first);
     return {
       mass_kg: first.mass_kg,
-      co2_wltp: first.co2_wltp,
+      co2_wltp: co2,
+      co2_standard: standard,
       engine_cc: first.engine_cc,
       fuel: first.fuel,
       power_kw: first.power_kw,
@@ -140,6 +219,31 @@ export function lookupStatic(make: string, model: string, year?: number, variant
   }
 
   return null;
+}
+
+// --- EU VIN Detection ---
+
+export interface EuVinResult {
+  isEuVin: boolean;
+  make?: string;
+  wmi?: string;
+}
+
+export function detectEuVin(vin: string): EuVinResult {
+  if (vin.length < 6) return { isEuVin: false };
+
+  const wmi = vin.substring(0, 3).toUpperCase();
+  const positions456 = vin.substring(3, 6).toUpperCase();
+
+  // EU VINs often have ZZZ in positions 4-6
+  const isEuVin = positions456 === 'ZZZ';
+
+  if (isEuVin) {
+    const make = WMI_CODES[wmi];
+    return { isEuVin: true, make, wmi };
+  }
+
+  return { isEuVin: false };
 }
 
 // --- Fuzzy matching ---
@@ -272,7 +376,7 @@ export async function lookupVehicle(
   year: number,
   variant?: string
 ): Promise<VehicleSpecs> {
-  // Priority 1: Static DB (has European WLTP data)
+  // Priority 1: Static DB (has European WLTP/NEDC data)
   const staticResult = lookupStatic(make, model, year, variant);
   if (staticResult && staticResult.mass_kg && staticResult.co2_wltp !== undefined) {
     return staticResult;
@@ -287,6 +391,7 @@ export async function lookupVehicle(
       if (vehicle) {
         const epaSpecs: VehicleSpecs = {
           co2_wltp: vehicle.co2_gkm || undefined,
+          co2_standard: 'WLTP', // EPA data converted
           engine_cc: vehicle.displ ? Math.round(vehicle.displ * 1000) : undefined,
           fuel: mapFuelEcoFuel(vehicle.fuelType),
           source: 'epa',
@@ -297,6 +402,7 @@ export async function lookupVehicle(
           return {
             mass_kg: staticResult.mass_kg || epaSpecs.mass_kg,
             co2_wltp: staticResult.co2_wltp || epaSpecs.co2_wltp,
+            co2_standard: staticResult.co2_standard || epaSpecs.co2_standard,
             engine_cc: staticResult.engine_cc || epaSpecs.engine_cc,
             fuel: staticResult.fuel || epaSpecs.fuel,
             power_kw: staticResult.power_kw,
@@ -315,9 +421,34 @@ export async function lookupVehicle(
   return { source: 'manual' };
 }
 
-export async function lookupByVin(vin: string): Promise<VehicleSpecs & { make?: string; model?: string; year?: number }> {
+export async function lookupByVin(vin: string): Promise<VehicleSpecs & { make?: string; model?: string; year?: number; isEuVin?: boolean }> {
+  // Check for EU VIN first
+  const euVinResult = detectEuVin(vin);
+
   const nhtsaData = await decodeVin(vin);
+
+  // If NHTSA returns no useful data and it's an EU VIN
+  if ((!nhtsaData || !nhtsaData.make) && euVinResult.isEuVin) {
+    return {
+      make: euVinResult.make,
+      isEuVin: true,
+      source: 'manual',
+    };
+  }
+
   if (!nhtsaData || !nhtsaData.make) {
+    // Even if not ZZZ pattern, try WMI lookup as fallback
+    if (vin.length >= 3) {
+      const wmi = vin.substring(0, 3).toUpperCase();
+      const make = WMI_CODES[wmi];
+      if (make) {
+        return {
+          make,
+          isEuVin: euVinResult.isEuVin,
+          source: 'manual',
+        };
+      }
+    }
     return { source: 'manual' };
   }
 
@@ -333,11 +464,32 @@ export async function lookupByVin(vin: string): Promise<VehicleSpecs & { make?: 
     make: nhtsaData.make,
     model: nhtsaData.model,
     year,
+    isEuVin: euVinResult.isEuVin,
     mass_kg: enriched.mass_kg || weightKg,
     co2_wltp: enriched.co2_wltp,
+    co2_standard: enriched.co2_standard,
     engine_cc: enriched.engine_cc || (nhtsaData.displacementCC > 0 ? Math.round(nhtsaData.displacementCC) : undefined),
     fuel: enriched.fuel || mapNHTSAFuel(nhtsaData.fuelType),
     power_kw: enriched.power_kw,
     source: enriched.source !== 'manual' ? enriched.source : 'nhtsa',
   };
+}
+
+// --- Brave Search Fallback ---
+
+export interface SearchResult {
+  title: string;
+  url: string;
+  description: string;
+}
+
+export async function searchVehicleSpecs(make: string, model: string, year: number): Promise<SearchResult[]> {
+  try {
+    const res = await fetch(`/api/vehicle-search?make=${encodeURIComponent(make)}&model=${encodeURIComponent(model)}&year=${year}`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.results || [];
+  } catch {
+    return [];
+  }
 }

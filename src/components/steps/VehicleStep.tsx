@@ -10,9 +10,12 @@ import {
   getModelNames,
   lookupVehicle,
   lookupByVin,
+  searchVehicleSpecs,
   type StaticVariant,
+  type Co2Standard,
+  type SearchResult,
 } from '@/lib/vehicleLookup';
-import { Info, Search, Loader2, Check, X, ChevronDown } from 'lucide-react';
+import { Info, Search, Loader2, Check, X, ChevronDown, ExternalLink, AlertTriangle } from 'lucide-react';
 
 const currencies = ['EUR', 'USD', 'GBP', 'JPY', 'CHF'];
 
@@ -53,15 +56,20 @@ export default function VehicleStep() {
   const [vinInput, setVinInput] = useState('');
   const [vinLoading, setVinLoading] = useState(false);
   const [vinError, setVinError] = useState('');
+  const [euVinNotice, setEuVinNotice] = useState('');
 
   const [lookupLoading, setLookupLoading] = useState(false);
   const [autoFill, setAutoFill] = useState<AutoFillState>({
     weight: null, co2: null, engine: null, fuel: null,
   });
+  const [co2Standard, setCo2Standard] = useState<Co2Standard>('WLTP');
   const [noMatch, setNoMatch] = useState(false);
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
 
   const makeRef = useRef<HTMLDivElement>(null);
   const modelRef = useRef<HTMLDivElement>(null);
+  const modelInputRef = useRef<HTMLInputElement>(null);
 
   // Close dropdowns on outside click
   useEffect(() => {
@@ -115,12 +123,26 @@ export default function VehicleStep() {
     }
   }, [selectedMake, selectedModel, data.vehicleYear]);
 
+  // Brave search fallback
+  const doSearchFallback = useCallback(async (make: string, model: string, year: number) => {
+    setSearchLoading(true);
+    try {
+      const results = await searchVehicleSpecs(make, model, year);
+      setSearchResults(results);
+    } catch {
+      setSearchResults([]);
+    } finally {
+      setSearchLoading(false);
+    }
+  }, []);
+
   // Perform lookup when make + model + year are set
   const doLookup = useCallback(async (make: string, model: string, year: number, variant?: string) => {
     if (!make || !model || !year) return;
 
     setLookupLoading(true);
     setNoMatch(false);
+    setSearchResults([]);
 
     try {
       const specs = await lookupVehicle(make, model, year, variant);
@@ -136,6 +158,9 @@ export default function VehicleStep() {
         updates.co2Emissions = specs.co2_wltp;
         newAutoFill.co2 = specs.source;
       }
+      if (specs.co2_standard) {
+        setCo2Standard(specs.co2_standard);
+      }
       if (specs.engine_cc) {
         newAutoFill.engine = specs.source;
       }
@@ -145,6 +170,8 @@ export default function VehicleStep() {
 
       if (specs.source === 'manual' && !specs.mass_kg && specs.co2_wltp === undefined) {
         setNoMatch(true);
+        // Trigger Brave search fallback
+        doSearchFallback(make, model, year);
       }
 
       setAutoFill(newAutoFill);
@@ -153,11 +180,12 @@ export default function VehicleStep() {
       }
     } catch {
       setNoMatch(true);
+      doSearchFallback(make, model, year);
     } finally {
       setLookupLoading(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [updateData]);
+  }, [updateData, doSearchFallback]);
 
   // Handle make selection
   const selectMake = (make: string) => {
@@ -173,6 +201,8 @@ export default function VehicleStep() {
     setSelectedVariant('');
     setAutoFill({ weight: null, co2: null, engine: null, fuel: null });
     setNoMatch(false);
+    setSearchResults([]);
+    setEuVinNotice('');
   };
 
   // Handle model selection
@@ -199,7 +229,7 @@ export default function VehicleStep() {
   // Handle year change
   const handleYearChange = (year: number) => {
     updateData({ vehicleYear: year });
-    if (selectedMake && selectedModel && year >= 1990 && year <= 2026) {
+    if (selectedMake && selectedModel && year >= 1985 && year <= 2026) {
       doLookup(selectedMake, selectedModel, year, selectedVariant || undefined);
     }
   };
@@ -214,12 +244,31 @@ export default function VehicleStep() {
     setVinLoading(true);
     setVinError('');
     setNoMatch(false);
+    setEuVinNotice('');
+    setSearchResults([]);
 
     try {
       const result = await lookupByVin(vinInput);
 
       const updates: Partial<typeof data> = {};
       const newAutoFill: AutoFillState = { weight: null, co2: null, engine: null, fuel: null };
+
+      if (result.isEuVin && result.source === 'manual') {
+        // EU VIN detected, NHTSA couldn't decode
+        if (result.make) {
+          updates.vehicleMake = result.make;
+          setSelectedMake(result.make);
+          setMakeQuery(result.make);
+          setEuVinNotice(t('eu_vin_detected', { make: result.make }));
+          // Focus model input after state updates
+          setTimeout(() => modelInputRef.current?.focus(), 100);
+        } else {
+          setEuVinNotice(t('eu_vin_unknown'));
+        }
+        updateData(updates);
+        setAutoFill(newAutoFill);
+        return;
+      }
 
       if (result.make) {
         updates.vehicleMake = result.make;
@@ -242,6 +291,9 @@ export default function VehicleStep() {
         updates.co2Emissions = result.co2_wltp;
         newAutoFill.co2 = result.source;
       }
+      if (result.co2_standard) {
+        setCo2Standard(result.co2_standard);
+      }
       if (result.fuel) {
         newAutoFill.fuel = result.source;
       }
@@ -257,6 +309,9 @@ export default function VehicleStep() {
       setVinLoading(false);
     }
   };
+
+  // Determine CO2 label
+  const co2Label = co2Standard === 'NEDC' ? t('co2_nedc') : t('co2');
 
   const inputClass = "w-full border border-gray-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-swiss-red/20 focus:border-swiss-red outline-none transition-all";
   const labelClass = "block text-sm font-medium text-gray-700 mb-1";
@@ -293,7 +348,7 @@ export default function VehicleStep() {
               className={`${inputClass} cursor-pointer`}
             >
               <option value="">{t('select_year')}</option>
-              {Array.from({ length: 37 }, (_, i) => 2026 - i).map(y => (
+              {Array.from({ length: 42 }, (_, i) => 2026 - i).map(y => (
                 <option key={y} value={y}>{y}</option>
               ))}
             </select>
@@ -337,6 +392,7 @@ export default function VehicleStep() {
           <div ref={modelRef} className="relative">
             <label className={labelClass}>{t('model')}</label>
             <input
+              ref={modelInputRef}
               type="text"
               value={modelQuery}
               onChange={(e) => {
@@ -382,9 +438,16 @@ export default function VehicleStep() {
         </div>
 
         {/* Variant selector */}
-        {variants.length > 1 && (
+        {variants.length > 0 && (
           <div>
-            <label className={labelClass}>{t('variant')}</label>
+            <label className={labelClass}>
+              {t('variant')}
+              {variants.length > 1 && (
+                <span className="ml-2 text-xs text-gray-500 font-normal">
+                  ({variants.length} {t('variants_available')})
+                </span>
+              )}
+            </label>
             <div className="relative">
               <select
                 value={selectedVariant}
@@ -392,11 +455,15 @@ export default function VehicleStep() {
                 className={`${inputClass} cursor-pointer appearance-none pr-8`}
               >
                 <option value="">{t('select_variant')}</option>
-                {variants.map((v) => (
-                  <option key={v.variant} value={v.variant}>
-                    {v.variant} — {v.power_kw} kW, {v.co2_wltp} g/km CO₂, {v.fuel}
-                  </option>
-                ))}
+                {variants.map((v) => {
+                  const co2Val = v.co2_wltp ?? v.co2_nedc;
+                  const co2Std = v.co2_wltp !== undefined ? 'WLTP' : 'NEDC';
+                  return (
+                    <option key={v.variant} value={v.variant}>
+                      {v.variant} — {v.power_kw} kW, {co2Val} g/km CO₂ ({co2Std}), {v.fuel}
+                    </option>
+                  );
+                })}
               </select>
               <ChevronDown className="absolute right-3 top-3 w-4 h-4 text-gray-400 pointer-events-none" />
             </div>
@@ -417,6 +484,7 @@ export default function VehicleStep() {
               onChange={(e) => {
                 setVinInput(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''));
                 setVinError('');
+                setEuVinNotice('');
               }}
               placeholder={t('vin_placeholder')}
               maxLength={17}
@@ -436,13 +504,55 @@ export default function VehicleStep() {
               <X className="w-3 h-3" /> {vinError}
             </p>
           )}
+          {euVinNotice && (
+            <div className="mt-2 text-sm text-blue-700 bg-blue-50 border border-blue-200 rounded-lg p-3 flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+              <span>{euVinNotice}</span>
+            </div>
+          )}
         </div>
 
         {/* No match notice */}
-        {noMatch && (
+        {noMatch && !searchLoading && searchResults.length === 0 && (
           <div className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3 flex items-start gap-2">
             <Info className="w-4 h-4 mt-0.5 flex-shrink-0" />
             <span>{t('no_match')}</span>
+          </div>
+        )}
+
+        {/* Search fallback results */}
+        {searchLoading && (
+          <div className="text-sm text-gray-500 flex items-center gap-2 p-3">
+            <Loader2 className="w-4 h-4 animate-spin" />
+            {t('searching_specs')}
+          </div>
+        )}
+        {searchResults.length > 0 && (
+          <div className="text-sm bg-blue-50 border border-blue-200 rounded-lg p-3 space-y-2">
+            <p className="font-medium text-blue-800 flex items-center gap-1">
+              <Search className="w-3.5 h-3.5" />
+              {t('search_results_title')}
+            </p>
+            <ul className="space-y-1.5">
+              {searchResults.map((result, i) => (
+                <li key={i}>
+                  <a
+                    href={result.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-blue-700 hover:text-blue-900 underline underline-offset-2 flex items-start gap-1 cursor-pointer"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+                    <span>
+                      <span className="font-medium">{result.title}</span>
+                      {result.description && (
+                        <span className="block text-xs text-blue-600 mt-0.5 line-clamp-1">{result.description}</span>
+                      )}
+                    </span>
+                  </a>
+                </li>
+              ))}
+            </ul>
           </div>
         )}
       </div>
@@ -473,7 +583,7 @@ export default function VehicleStep() {
         {/* CO2 */}
         <div>
           <label className={`${labelClass} flex items-center gap-2`}>
-            {t('co2')}
+            {co2Label}
             <SourceBadge source={autoFill.co2} />
           </label>
           <input
