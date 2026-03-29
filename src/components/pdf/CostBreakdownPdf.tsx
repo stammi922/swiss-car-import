@@ -61,8 +61,13 @@ export function CostBreakdownPdf({ data, results, locale }: Props) {
             {data.vehicleMake} {data.vehicleModel} ({data.vehicleYear})
           </Text>
           <Text style={styles.vehicleDetail}>
-            {country?.name[locale] || data.originCountry} | {data.vehicleWeight} kg | {data.co2Emissions} g/km CO2 | {canton?.name[locale] || data.canton}
+            {country?.name[locale] || data.originCountry} | {data.vehicleWeight} kg | {data.co2Emissions} g/km CO₂ | {canton?.name[locale] || data.canton}
           </Text>
+          {(data.vehicleMake || data.vehicleModel) && (
+            <Text style={[styles.vehicleDetail, { fontSize: 9, marginTop: 4 }]}>
+              {de ? 'Fahrzeugdaten aus Datenbank oder manueller Eingabe.' : 'Vehicle data from database or manual entry.'}
+            </Text>
+          )}
         </View>
 
         {/* Vehicle price */}
